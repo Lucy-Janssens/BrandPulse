@@ -19,6 +19,7 @@ import {
   getDateRange,
 } from './services/peecData'
 import { generateContentBrief } from './services/openrouter'
+import { runDailyAnalysis, clearAnalysisCache, getCachedAnalysis } from './services/dailyAnalysis'
 import './index.css'
 
 // --- Project Context ---
@@ -457,10 +458,95 @@ const SourcesExplorer = () => {
   );
 };
 
+// --- Daily AI Briefing ---
+
+const DailyBriefing = () => {
+  const { projectId, dateRange, ownBrandName } = useContext(ProjectContext);
+  const [analysis, setAnalysis] = useState(getCachedAnalysis());
+  const [loading, setLoading] = useState(!analysis);
+  const [error, setError] = useState(null);
+
+  const load = async (force = false) => {
+    setLoading(true); setError(null);
+    if (force) clearAnalysisCache();
+    try {
+      const result = await runDailyAnalysis(projectId, ownBrandName);
+      setAnalysis(result);
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { if (!analysis) load(); }, [projectId]);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBanner message={error} onRetry={() => load(true)} />;
+  if (!analysis?.analysis) return null;
+
+  const a = analysis.analysis;
+  const scoreColor = a.healthScore >= 70 ? '#4ade80' : a.healthScore >= 40 ? '#f59e0b' : '#ef4444';
+  const prioColor = { high: '#ef4444', medium: '#f59e0b', low: '#6366f1' };
+  const findingIcon = { positive: '↑', negative: '↓', neutral: '→' };
+  const findingColor = { positive: '#4ade80', negative: '#ef4444', neutral: 'var(--color-text-muted)' };
+
+  return (
+    <div className="flex-col gap-6" style={{ width: '100%' }}>
+      <header className="flex justify-between items-center">
+        <div>
+          <h2 style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>Daily AI Briefing</h2>
+          <p className="text-muted">Auto-generated {analysis.date} • Powered by OpenRouter</p>
+        </div>
+        <button onClick={() => load(true)} className="btn" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}>↻ Refresh</button>
+      </header>
+
+      {/* Health Score + Headline */}
+      <div className="glass-panel flex items-center gap-6" style={{ padding: '2rem' }}>
+        <div style={{ width: '80px', height: '80px', borderRadius: '50%', border: `4px solid ${scoreColor}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <span style={{ fontSize: '1.8rem', fontWeight: 700, color: scoreColor }}>{a.healthScore}</span>
+        </div>
+        <div>
+          <h3 style={{ fontSize: '1.3rem', marginBottom: '0.5rem' }}>{a.headline}</h3>
+          {a.competitorAlert && <p className="text-sm" style={{ color: '#f59e0b' }}>⚡ {a.competitorAlert}</p>}
+          {a.citationOpportunity && <p className="text-sm" style={{ color: 'var(--color-primary)' }}>🎯 {a.citationOpportunity}</p>}
+        </div>
+      </div>
+
+      {/* Key Findings */}
+      <div className="glass-panel" style={{ padding: '1.5rem' }}>
+        <h3 style={{ marginBottom: '1rem' }}>Key Findings</h3>
+        <div className="flex-col gap-3">
+          {a.keyFindings?.map((f, i) => (
+            <div key={i} className="flex items-center gap-3" style={{ padding: '0.75rem 1rem', background: 'var(--color-bg-base)', borderRadius: '10px' }}>
+              <span style={{ color: findingColor[f.type], fontWeight: 700, fontSize: '1.1rem' }}>{findingIcon[f.type]}</span>
+              <span className="text-sm">{f.text}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Proposed Actions */}
+      <div className="glass-panel" style={{ padding: '1.5rem' }}>
+        <h3 style={{ marginBottom: '1rem' }}>Proposed Actions</h3>
+        <div className="flex-col gap-4">
+          {a.proposedActions?.map((action, i) => (
+            <div key={i} style={{ padding: '1.25rem', background: 'var(--color-bg-base)', borderRadius: '12px', borderLeft: `4px solid ${prioColor[action.priority]}` }}>
+              <div className="flex items-center gap-3" style={{ marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', color: prioColor[action.priority], letterSpacing: '0.05em' }}>{action.priority}</span>
+                <span style={{ fontWeight: 600 }}>{action.title}</span>
+              </div>
+              <p className="text-sm text-muted" style={{ marginBottom: '0.25rem' }}>{action.description}</p>
+              {action.impact && <p className="text-sm" style={{ color: 'var(--color-primary)' }}>→ {action.impact}</p>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- LAYOUT ---
 
 function DashboardLayout() {
-  const [activeModule, setActiveModule] = useState('Overview');
+  const [activeModule, setActiveModule] = useState('Daily Briefing');
   const [rangeDays, setRangeDays] = useState(30);
   const [ctx, setCtx] = useState(null);
   const [ctxLoading, setCtxLoading] = useState(true);
@@ -487,6 +573,7 @@ function DashboardLayout() {
   }, []);
 
   const modules = {
+    'Daily Briefing': <DailyBriefing />,
     'Overview': <OverviewDashboard />,
     'Visibility Deep-Dive': <VisibilityDeepDive />,
     'Competitor Radar': <CompetitorRadar />,
