@@ -5,12 +5,13 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // Proxy MCP requests through Vite dev server to bypass CORS
     proxy: {
-      '/peec-mcp': {
+      // Proxy ALL api.peec.ai requests through Vite to bypass CORS.
+      // This covers /mcp, /.well-known/*, /register, /token, /authorize, /revoke
+      '/peec-api': {
         target: 'https://api.peec.ai',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/peec-mcp/, '/mcp'),
+        rewrite: (path) => path.replace(/^\/peec-api/, ''),
         secure: true,
       },
     },

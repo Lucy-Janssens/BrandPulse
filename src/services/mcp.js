@@ -1,172 +1,201 @@
 /**
- * Peec MCP Client — Streamable HTTP transport
+ * Peec MCP Client — Uses the official @modelcontextprotocol/sdk
+ * with StreamableHTTPClientTransport and built-in OAuth PKCE.
  * 
- * All MCP calls are POST https://api.peec.ai/mcp with JSON-RPC 2.0.
- * Auth is handled by the peecAuth module (OAuth 2.0 PKCE Bearer tokens).
+ * All requests to api.peec.ai are routed through Vite's proxy (/peec-api/*)
+ * to bypass CORS. A custom fetch function rewrites absolute api.peec.ai URLs
+ * so the SDK's internal discovery, registration, and token exchange calls
+ * all go through the proxy seamlessly.
  */
 
-import { getValidAccessToken, isTokenExpired, getStoredTokens } from './peecAuth.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-const MCP_ENDPOINT = '/peec-mcp';  // Proxied through Vite to https://api.peec.ai/mcp
+const PEEC_ORIGIN = 'https://api.peec.ai';
+const PROXY_PREFIX = '/peec-api';
+const MCP_SERVER_URL = `${PROXY_PREFIX}/mcp`;
+const REDIRECT_URI = `${window.location.origin}/callback`;
 
-let mcpSessionId = null;
-let isInitialized = false;
-let jsonRpcId = 0;
+// Storage keys
+const STORAGE = {
+  tokens: 'peec_oauth_tokens',
+  clientInfo: 'peec_client_info',
+  codeVerifier: 'peec_code_verifier',
+  discoveryState: 'peec_discovery_state',
+};
 
-function nextId() {
-  return ++jsonRpcId;
+// Singleton
+let mcpClient = null;
+let mcpTransport = null;
+
+/**
+ * Custom fetch that rewrites api.peec.ai URLs to go through the Vite proxy.
+ * The authorize endpoint is excluded — it needs a real browser redirect.
+ */
+function proxyFetch(input, init) {
+  let url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  
+  // Rewrite absolute api.peec.ai URLs to local proxy
+  if (url.startsWith(PEEC_ORIGIN)) {
+    url = url.replace(PEEC_ORIGIN, PROXY_PREFIX);
+  }
+  
+  return fetch(url, init);
 }
 
 /**
- * Core MCP JSON-RPC call via Streamable HTTP.
- * Handles auth token injection, session tracking, and response parsing.
+ * Browser-based OAuth provider implementing the MCP SDK's OAuthClientProvider.
  */
-async function mcpRequest(method, params = {}) {
-  const accessToken = await getValidAccessToken();
+function createBrowserAuthProvider() {
+  return {
+    get redirectUrl() {
+      return REDIRECT_URI;
+    },
 
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, text/event-stream',
-    'Authorization': `Bearer ${accessToken}`,
-  };
+    get clientMetadata() {
+      return {
+        client_name: 'BrandPulse AI',
+        redirect_uris: [REDIRECT_URI],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      };
+    },
 
-  if (mcpSessionId) {
-    headers['Mcp-Session-Id'] = mcpSessionId;
-  }
+    clientInformation() {
+      const stored = localStorage.getItem(STORAGE.clientInfo);
+      return stored ? JSON.parse(stored) : undefined;
+    },
 
-  const body = {
-    jsonrpc: '2.0',
-    id: nextId(),
-    method,
-    params,
-  };
+    saveClientInformation(info) {
+      localStorage.setItem(STORAGE.clientInfo, JSON.stringify(info));
+    },
 
-  const res = await fetch(MCP_ENDPOINT, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+    tokens() {
+      const stored = localStorage.getItem(STORAGE.tokens);
+      return stored ? JSON.parse(stored) : undefined;
+    },
 
-  // Capture session ID from response
-  const sessionHeader = res.headers.get('mcp-session-id');
-  if (sessionHeader) {
-    mcpSessionId = sessionHeader;
-  }
+    saveTokens(tokens) {
+      localStorage.setItem(STORAGE.tokens, JSON.stringify(tokens));
+    },
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`MCP ${method} failed (${res.status}): ${errText}`);
-  }
+    redirectToAuthorization(url) {
+      // This is the one URL that MUST go directly to api.peec.ai (browser redirect, not fetch)
+      sessionStorage.setItem('peec_return_url', window.location.href);
+      window.location.href = url.toString();
+    },
 
-  const contentType = res.headers.get('content-type') || '';
+    saveCodeVerifier(verifier) {
+      sessionStorage.setItem(STORAGE.codeVerifier, verifier);
+    },
 
-  // Handle SSE streaming responses
-  if (contentType.includes('text/event-stream')) {
-    return await parseSSEResponse(res);
-  }
+    codeVerifier() {
+      return sessionStorage.getItem(STORAGE.codeVerifier) || '';
+    },
 
-  // Handle standard JSON-RPC response
-  const json = await res.json();
-  if (json.error) {
-    throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
-  }
-  return json.result;
-}
+    saveDiscoveryState(state) {
+      sessionStorage.setItem(STORAGE.discoveryState, JSON.stringify(state));
+    },
 
-/**
- * Parse Server-Sent Events response for streaming MCP results
- */
-async function parseSSEResponse(res) {
-  const text = await res.text();
-  const lines = text.split('\n');
-  let lastData = null;
+    discoveryState() {
+      const stored = sessionStorage.getItem(STORAGE.discoveryState);
+      return stored ? JSON.parse(stored) : undefined;
+    },
 
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      try {
-        const parsed = JSON.parse(line.slice(6));
-        lastData = parsed;
-      } catch (e) {
-        // skip non-JSON data lines
+    invalidateCredentials(type) {
+      if (type === 'all') {
+        localStorage.removeItem(STORAGE.clientInfo);
+        localStorage.removeItem(STORAGE.tokens);
+      } else if (type === 'tokens') {
+        localStorage.removeItem(STORAGE.tokens);
       }
-    }
-  }
+    },
 
-  if (lastData?.result) return lastData.result;
-  if (lastData?.error) throw new Error(`MCP SSE error: ${lastData.error.message}`);
-  return lastData;
+    // Override resource URL validation — our proxy URL maps to the real Peec resource
+    validateResourceURL(defaultResource, serverResource) {
+      // Always return the server's canonical resource URL so the token request
+      // uses the real origin, not our localhost proxy path
+      if (serverResource) {
+        return new URL(serverResource);
+      }
+      return new URL(`${PEEC_ORIGIN}/mcp`);
+    },
+  };
 }
 
-// --- Public API ---
+/**
+ * Get or create the MCP client. Triggers OAuth if not yet authorized.
+ */
+async function getClient() {
+  if (mcpClient) return mcpClient;
+
+  const authProvider = createBrowserAuthProvider();
+
+  mcpTransport = new StreamableHTTPClientTransport(
+    new URL(MCP_SERVER_URL, window.location.origin),
+    {
+      authProvider,
+      fetch: proxyFetch,  // Route all SDK fetches through our CORS proxy
+    }
+  );
+
+  mcpClient = new Client(
+    { name: 'BrandPulse AI', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
+
+  await mcpClient.connect(mcpTransport);
+  console.log('✅ MCP client connected to Peec AI');
+  return mcpClient;
+}
 
 /**
- * Initialize the MCP session. Must be called once before other operations.
+ * Handle the OAuth callback — exchanges code for tokens via SDK.
  */
-export async function initializeMcp() {
-  if (isInitialized) return;
+export async function handleOAuthCallback(code) {
+  const authProvider = createBrowserAuthProvider();
 
-  const result = await mcpRequest('initialize', {
-    protocolVersion: '2025-03-26',
-    capabilities: {},
-    clientInfo: {
-      name: 'BrandPulse AI',
-      version: '1.0.0',
-    },
-  });
+  const transport = new StreamableHTTPClientTransport(
+    new URL(MCP_SERVER_URL, window.location.origin),
+    {
+      authProvider,
+      fetch: proxyFetch,
+    }
+  );
 
-  console.log('✅ MCP session initialized:', result);
-  isInitialized = true;
-
-  // Send initialized notification (no id = notification)
-  await fetch(MCP_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${await getValidAccessToken()}`,
-      ...(mcpSessionId ? { 'Mcp-Session-Id': mcpSessionId } : {}),
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'notifications/initialized',
-    }),
-  });
-
-  return result;
+  // SDK's finishAuth does discovery + token exchange using our proxy fetch
+  await transport.finishAuth(code);
+  console.log('✅ OAuth tokens acquired');
 }
 
 /**
  * List all available Peec MCP tools.
  */
 export async function listTools() {
-  await initializeMcp();
-  const result = await mcpRequest('tools/list');
-  console.log(`📦 Peec MCP Tools (${result.tools?.length || 0}):`, result.tools?.map(t => t.name));
+  const client = await getClient();
+  const result = await client.listTools();
+  console.log(`📦 ${result.tools?.length || 0} Peec MCP tools available`);
   return result.tools || [];
 }
 
 /**
- * Call a specific Peec MCP tool by name with arguments.
+ * Call a specific Peec MCP tool.
  */
 export async function callTool(name, args = {}) {
-  await initializeMcp();
-  console.log(`🔧 Calling MCP tool: ${name}`, args);
-  const result = await mcpRequest('tools/call', { name, arguments: args });
-  return result;
+  const client = await getClient();
+  console.log(`🔧 Calling: ${name}`, args);
+  return await client.callTool({ name, arguments: args });
 }
 
 /**
- * Single entry point for dashboard components.
- * Wraps tool calls with error handling and token refresh.
+ * Single entry point for all dashboard data fetches.
  */
 export async function mcpCall(toolName, args = {}) {
   try {
-    const result = await callTool(toolName, args);
-    return result;
+    return await callTool(toolName, args);
   } catch (err) {
-    // If it's an auth error, the token may have been revoked
-    if (err.message.includes('401') || err.message.includes('invalid_token')) {
-      console.warn('MCP auth error, clearing tokens');
-      const { clearTokens } = await import('./peecAuth.js');
+    if (err.message?.includes('Unauthorized') || err.message?.includes('401')) {
       clearTokens();
     }
     throw err;
@@ -174,18 +203,20 @@ export async function mcpCall(toolName, args = {}) {
 }
 
 /**
- * Check if we have a valid MCP connection (valid token stored).
+ * Check if user has stored OAuth tokens.
  */
 export function isMcpConnected() {
-  const tokens = getStoredTokens();
-  return tokens !== null && !isTokenExpired();
+  return localStorage.getItem(STORAGE.tokens) !== null;
 }
 
 /**
- * Reset MCP session state (e.g., on logout).
+ * Clear all auth state.
  */
-export function resetMcp() {
-  mcpSessionId = null;
-  isInitialized = false;
-  jsonRpcId = 0;
+export function clearTokens() {
+  Object.values(STORAGE).forEach(key => {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  });
+  mcpClient = null;
+  mcpTransport = null;
 }

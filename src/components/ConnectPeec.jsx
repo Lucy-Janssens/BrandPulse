@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { startPeecAuth } from '../services/peecAuth';
+import { listTools } from '../services/mcp';
 
 export default function ConnectPeec() {
   const [loading, setLoading] = useState(false);
@@ -9,11 +9,23 @@ export default function ConnectPeec() {
     setLoading(true);
     setError('');
     try {
-      await startPeecAuth();
-      // This will redirect the browser — we won't reach here
+      // Attempting to list tools will trigger the SDK's full OAuth flow:
+      // 1. Send request to MCP endpoint → get 401
+      // 2. Discover OAuth metadata 
+      // 3. Register client dynamically
+      // 4. Generate PKCE challenge
+      // 5. Redirect browser to Peec authorization URL
+      // The redirect happens inside the auth provider's redirectToAuthorization()
+      await listTools();
+      // If we get here, we're already authorized — redirect to dashboard
+      window.location.href = '/';
     } catch (err) {
-      setError(err.message || 'Failed to start auth flow');
-      setLoading(false);
+      // UnauthorizedError with redirect is expected — the page will navigate away
+      // Only show error if it's a real failure
+      if (!err.message?.includes('Unauthorized')) {
+        setError(err.message || 'Connection failed');
+        setLoading(false);
+      }
     }
   };
 
@@ -26,7 +38,7 @@ export default function ConnectPeec() {
         
         <h2>Connect Peec AI</h2>
         <p className="text-muted">
-          Securely connect your Peec account via OAuth to grant BrandPulse access to the live AI Model Context Protocol (MCP). You'll be redirected to Peec to authorize, then brought back here.
+          Securely connect your Peec account to grant BrandPulse access to the live AI Model Context Protocol (MCP). You'll be redirected to Peec to authorize.
         </p>
 
         {error && <div className="badge badge-red mt-2">{error}</div>}
@@ -37,7 +49,7 @@ export default function ConnectPeec() {
           disabled={loading}
           style={{ marginTop: '1rem', padding: '1rem 2rem', fontSize: '1.1rem', width: '100%' }}
         >
-          {loading ? 'Redirecting to Peec AI...' : 'Connect with Peec AI'}
+          {loading ? 'Connecting to Peec AI...' : 'Connect with Peec AI'}
         </button>
 
         <p className="text-sm text-muted mt-4">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { handlePeecCallback } from '../services/peecAuth';
+import { handleOAuthCallback } from '../services/mcp';
 
 export default function PeecCallback() {
   const [status, setStatus] = useState('Exchanging authorization code...');
@@ -23,14 +23,14 @@ export default function PeecCallback() {
 
       try {
         setStatus('Exchanging code for access token...');
-        await handlePeecCallback(code);
+        await handleOAuthCallback(code);
         setStatus('✅ Connected! Redirecting to dashboard...');
         
-        // Clean redirect to dashboard
         setTimeout(() => {
           window.location.href = '/';
         }, 1000);
       } catch (err) {
+        console.error('OAuth callback error:', err);
         setError(err.message);
       }
     };

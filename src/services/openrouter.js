@@ -1,98 +1,56 @@
-import { listTools, mcpCall } from './mcp.js';
+/**
+ * OpenRouter Service — AI Content Brief Generation only.
+ * 
+ * All structured data comes from direct MCP calls (peecData.js).
+ * OpenRouter is used solely for generating actionable content strategies.
+ */
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 
-export const analyzeBrandWithAI = async (companyName) => {
+/**
+ * Generate an AI content brief for a citation gap.
+ * @param {Object} gap - The citation gap data from get_actions
+ * @param {string} companyName - The tracked brand name
+ * @returns {string} Markdown content brief
+ */
+export async function generateContentBrief(gap, companyName) {
   if (!OPENROUTER_API_KEY) {
-    throw new Error("Missing VITE_OPENROUTER_API_KEY in .env");
+    throw new Error('Missing VITE_OPENROUTER_API_KEY');
   }
 
-  // 1. Fetch live MCP tools from Peec via Streamable HTTP
-  const peecToolsList = await listTools();
-
-  // 2. Map MCP tool definitions to OpenAI function-calling format
-  const openRouterTools = peecToolsList.map(t => ({
-    type: "function",
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema || { type: "object", properties: {} }
-    }
-  }));
-
-  const promptContext = `
-    You are the BrandPulse AI backend. The company we are tracking is "${companyName}". 
-    You MUST use the provided tools to query the live Peec AI MCP server for brand visibility, competitor data, and citation gaps.
-    
-    After gathering data via tools, return ONLY a raw JSON object matching this schema:
-    {
-      "visibilityData": { "overallScore": 85, "trend": "+12%", "sentiment": 88 },
-      "alerts": [
-        { "id": 1, "type": "Gain", "message": "Mention added in ChatGPT", "time": "Just now" }
-      ],
-      "citations": [
-        { "id": 1, "query": "startup tools", "model": "Claude", "citedCompetitor": "Acme", "impact": "High", "suggestedAction": "Create comparison" }
-      ]
-    }
-  `;
-
-  const messages = [
-    { role: "system", content: "You are an AI proxy orchestrator. Execute provided tools to gather company data, then return valid JSON matching the requested schema. No markdown, no explanation — only JSON." },
-    { role: "user", content: promptContext }
-  ];
-
-  // 3. Initial LLM call with tools
-  let response = await makeCompletionRequest(messages, openRouterTools);
-  const messageContent = response.choices[0].message;
-
-  // 4. If LLM wants to call tools, execute them against Peec MCP
-  if (messageContent.tool_calls) {
-    messages.push(messageContent);
-
-    for (const toolCall of messageContent.tool_calls) {
-      console.log(`🔧 Executing MCP tool: ${toolCall.function.name}`);
-      const params = JSON.parse(toolCall.function.arguments);
-
-      // Execute against Peec via authenticated Streamable HTTP
-      const toolResult = await mcpCall(toolCall.function.name, params);
-
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        name: toolCall.function.name,
-        content: JSON.stringify(toolResult)
-      });
-    }
-
-    // Let the LLM synthesize tool results into our schema
-    response = await makeCompletionRequest(messages, openRouterTools);
-  }
-
-  // 5. Parse final JSON
-  const rawContent = response.choices[0].message.content.trim();
-  const jsonString = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
-  return JSON.parse(jsonString);
-};
-
-const makeCompletionRequest = async (messages, tools) => {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
     headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "HTTP-Referer": window.location.origin,
-      "X-Title": "BrandPulse AI",
-      "Content-Type": "application/json"
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'BrandPulse AI',
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: "openai/gpt-4o-mini",
-      messages,
-      tools: tools.length > 0 ? tools : undefined,
-      tool_choice: tools.length > 0 ? "auto" : undefined,
-    })
+      model: 'openai/gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are an AI visibility strategist. Given a citation gap analysis, generate a concise, actionable content brief that explains exactly what ${companyName} should add or improve on their page to win citations from AI search engines. Format as markdown with clear headings.`,
+        },
+        {
+          role: 'user',
+          content: `Citation gap analysis for ${companyName}:
+- Action type: ${gap.group_type || gap.action_group_type || 'Unknown'}
+- Domain: ${gap.domain || 'N/A'}
+- URL classification: ${gap.url_classification || 'N/A'}
+- Opportunity score: ${gap.opportunity_score || 'N/A'}
+- Gap percentage: ${gap.gap_percentage || 'N/A'}%
+- Coverage: ${gap.coverage_percentage || 'N/A'}%
+- Recommendation text: ${gap.text || 'N/A'}
+
+Generate a brief content strategy (3–5 bullet points) to close this gap.`,
+        },
+      ],
+    }),
   });
 
-  if (!res.ok) {
-    throw new Error(`OpenRouter API Error: ${res.status}`);
-  }
-  return await res.json();
-};
+  if (!res.ok) throw new Error(`OpenRouter error: ${res.status}`);
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
