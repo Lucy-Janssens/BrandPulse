@@ -6,6 +6,7 @@
  */
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = import.meta.env.VITE_OPENROUTER_MODEL || 'openai/gpt-4o-mini';
 
 /**
  * Generate an AI content brief for a citation gap.
@@ -27,7 +28,7 @@ export async function generateContentBrief(gap, companyName) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'openai/gpt-4o-mini',
+      model: OPENROUTER_MODEL,
       messages: [
         {
           role: 'system',

@@ -20,10 +20,11 @@ import {
 } from './services/peecData'
 import { generateContentBrief } from './services/openrouter'
 import { runDailyAnalysis, clearAnalysisCache, getCachedAnalysis } from './services/dailyAnalysis'
+import { AIChat } from './components/AIChat'
 import './index.css'
 
 // --- Project Context ---
-const ProjectContext = createContext(null);
+export const ProjectContext = createContext(null);
 
 // --- Shared Components ---
 
@@ -85,10 +86,8 @@ const OverviewDashboard = () => {
   const load = async () => {
     setLoading(true); setError(null);
     try {
-      const [k, t] = await Promise.all([
-        fetchOverviewKPIs(projectId, dateRange),
-        fetchVisibilityTrend(projectId, dateRange),
-      ]);
+      const k = await fetchOverviewKPIs(projectId, dateRange);
+      const t = await fetchVisibilityTrend(projectId, dateRange);
       setKpis(k); setTrend(t);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -151,10 +150,8 @@ const VisibilityDeepDive = () => {
   const load = async () => {
     setLoading(true); setError(null);
     try {
-      const [m, t] = await Promise.all([
-        fetchVisibilityByModel(projectId, dateRange),
-        fetchVisibilityByTopic(projectId, dateRange),
-      ]);
+      const m = await fetchVisibilityByModel(projectId, dateRange);
+      const t = await fetchVisibilityByTopic(projectId, dateRange);
       setByModel(m); setByTopic(t);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -371,10 +368,8 @@ const SourcesExplorer = () => {
   const load = async () => {
     setLoading(true); setError(null);
     try {
-      const [d, u] = await Promise.all([
-        fetchTopDomains(projectId, dateRange),
-        fetchTopURLs(projectId, dateRange),
-      ]);
+      const d = await fetchTopDomains(projectId, dateRange);
+      const u = await fetchTopURLs(projectId, dateRange);
       setDomains(d); setUrls(u);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -462,8 +457,8 @@ const SourcesExplorer = () => {
 
 const DailyBriefing = () => {
   const { projectId, dateRange, ownBrandName } = useContext(ProjectContext);
-  const [analysis, setAnalysis] = useState(getCachedAnalysis());
-  const [loading, setLoading] = useState(!analysis);
+  const [analysis, setAnalysis] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const load = async (force = false) => {
@@ -476,7 +471,7 @@ const DailyBriefing = () => {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { if (!analysis) load(); }, [projectId]);
+  useEffect(() => { load(); }, [projectId]);
 
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner message={error} onRetry={() => load(true)} />;
@@ -579,6 +574,7 @@ function DashboardLayout() {
     'Competitor Radar': <CompetitorRadar />,
     'Citation Gap Audit': <CitationGapAudit />,
     'Sources Explorer': <SourcesExplorer />,
+    'AI Chat': <AIChat />,
   };
 
   if (ctxLoading) return (

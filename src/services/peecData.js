@@ -13,7 +13,7 @@ import { mcpCall, listTools } from './mcp.js';
  * Convert Peec's columnar format {columns, rows} into an array of objects.
  * e.g. {columns: ["a","b"], rows: [[1,2],[3,4]]} → [{a:1,b:2},{a:3,b:4}]
  */
-function toObjects(result) {
+export function toObjects(result) {
   // Handle the MCP callTool response format
   const data = result?.content?.[0]?.text 
     ? JSON.parse(result.content[0].text)
@@ -77,11 +77,9 @@ export async function fetchProjectContext() {
   if (projects.length === 0) throw new Error('No Peec projects found');
   
   const project = projects[0]; // Use first project by default
-  const [brands, models, topics] = await Promise.all([
-    fetchBrands(project.id),
-    fetchModels(project.id),
-    fetchTopics(project.id),
-  ]);
+  const brands = await fetchBrands(project.id);
+  const models = await fetchModels(project.id);
+  const topics = await fetchTopics(project.id);
 
   const ownBrand = brands.find(b => b.is_own === true) || brands[0];
 

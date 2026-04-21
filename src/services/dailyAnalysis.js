@@ -3,7 +3,7 @@
  * 
  * Pulls data from all Peec MCP tools, feeds it to OpenRouter,
  * and generates a structured daily briefing with proposed actions.
- * Results are cached in localStorage (1 per day).
+ * Results are persisted in MongoDB via the API.
  */
 
 import {
@@ -16,41 +16,75 @@ import {
 } from './peecData.js';
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
-const CACHE_KEY = 'brandpulse_daily_analysis';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5050';
+const OPENROUTER_MODEL = import.meta.env.VITE_OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+
+function getAuthHeaders() {
+  const token = localStorage.getItem('token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+  };
+}
 
 /**
- * Check if we already have today's analysis cached.
+ * Check if we already have today's analysis in the DB.
  */
-export function getCachedAnalysis() {
+export async function getCachedAnalysis() {
   try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (!cached) return null;
-    const parsed = JSON.parse(cached);
-    const today = new Date().toISOString().slice(0, 10);
-    if (parsed.date === today) return parsed;
-    return null; // stale
+    const res = await fetch(`${API_BASE}/api/analysis/today`, {
+      headers: getAuthHeaders(),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return await res.json();
   } catch { return null; }
+}
+
+/**
+ * Fetch analysis history (last N days).
+ */
+export async function getAnalysisHistory(limit = 7) {
+  try {
+    const res = await fetch(`${API_BASE}/api/analysis/history?limit=${limit}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch { return []; }
+}
+
+/**
+ * Save analysis to the database.
+ */
+async function saveAnalysis(data) {
+  try {
+    await fetch(`${API_BASE}/api/analysis`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+  } catch (err) {
+    console.warn('Failed to save analysis to DB:', err);
+  }
 }
 
 /**
  * Run the full daily analysis pipeline.
  */
 export async function runDailyAnalysis(projectId, ownBrandName) {
-  // Check cache first
-  const cached = getCachedAnalysis();
+  // Check DB cache first
+  const cached = await getCachedAnalysis();
   if (cached) return cached;
 
   const range7 = getDateRange(7);
-  const range14 = getDateRange(14);
 
-  // Gather all data in parallel
-  const [kpis, byModel, competitors, gaps, domains] = await Promise.all([
-    fetchOverviewKPIs(projectId, range7).catch(() => null),
-    fetchVisibilityByModel(projectId, range7).catch(() => []),
-    fetchCompetitorTable(projectId, range7).catch(() => []),
-    fetchCitationGapOverview(projectId, range7).catch(() => []),
-    fetchTopDomains(projectId, range7).catch(() => []),
-  ]);
+  // Gather all data sequentially to prevent overwhelming the Peec MCP server
+  const kpis = await fetchOverviewKPIs(projectId, range7).catch(() => null);
+  const byModel = await fetchVisibilityByModel(projectId, range7).catch(() => []);
+  const competitors = await fetchCompetitorTable(projectId, range7).catch(() => []);
+  const gaps = await fetchCitationGapOverview(projectId, range7).catch(() => []);
+  const domains = await fetchTopDomains(projectId, range7).catch(() => []);
 
   // Build the context snapshot for the LLM
   const snapshot = {
@@ -92,15 +126,19 @@ export async function runDailyAnalysis(projectId, ownBrandName) {
   // Generate AI analysis via OpenRouter
   const analysis = await generateAnalysis(snapshot);
 
-  // Cache it
+  const today = new Date().toISOString().slice(0, 10);
   const result = {
-    date: new Date().toISOString().slice(0, 10),
+    date: today,
     timestamp: new Date().toISOString(),
+    projectId,
+    brandName: ownBrandName,
     snapshot,
     analysis,
   };
 
-  localStorage.setItem(CACHE_KEY, JSON.stringify(result));
+  // Persist to MongoDB
+  await saveAnalysis(result);
+
   return result;
 }
 
@@ -119,7 +157,7 @@ async function generateAnalysis(snapshot) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
+        model: OPENROUTER_MODEL,
         messages: [
           {
             role: 'system',
@@ -192,7 +230,7 @@ function fallbackAnalysis(snapshot) {
   };
 }
 
-/** Force refresh (clear cache and re-run) */
+/** Force refresh (clear DB cache by re-running) */
 export function clearAnalysisCache() {
-  localStorage.removeItem(CACHE_KEY);
+  // The DB entry will be overwritten by upsert
 }

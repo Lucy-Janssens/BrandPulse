@@ -7,6 +7,7 @@ require('dotenv').config();
 
 const User = require('./models/User');
 const Team = require('./models/Team');
+const DailyAnalysis = require('./models/DailyAnalysis');
 
 const app = express();
 app.use((req, res, next) => {
@@ -15,6 +16,11 @@ app.use((req, res, next) => {
 });
 app.use(cors());
 app.use(express.json());
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://mongo:27017/brandpulse';
@@ -153,6 +159,60 @@ app.get('/api/peec/callback', async (req, res) => {
   } catch (err) {
     console.error('OAuth Callback Error:', err);
     res.redirect('http://127.0.0.1:5173/?peec_auth=failed');
+  }
+});
+
+// --- DAILY ANALYSIS ROUTES ---
+
+// GET today's analysis for the authenticated user
+app.get('/api/analysis/today', authenticateToken, async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const analysis = await DailyAnalysis.findOne({
+      userId: req.user.userId,
+      date: today,
+    });
+
+    if (!analysis) return res.status(404).json({ error: 'No analysis for today' });
+    res.json(analysis);
+  } catch (err) {
+    console.error('GET analysis error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET analysis history (last N days)
+app.get('/api/analysis/history', authenticateToken, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 7;
+    const analyses = await DailyAnalysis.find({ userId: req.user.userId })
+      .sort({ date: -1 })
+      .limit(limit)
+      .lean();
+
+    res.json(analyses);
+  } catch (err) {
+    console.error('GET analysis history error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST save a new daily analysis
+app.post('/api/analysis', authenticateToken, async (req, res) => {
+  try {
+    const { date, projectId, brandName, snapshot, analysis } = req.body;
+    if (!date || !analysis) return res.status(400).json({ error: 'date and analysis are required' });
+
+    const doc = await DailyAnalysis.findOneAndUpdate(
+      { userId: req.user.userId, date },
+      { projectId, brandName, snapshot, analysis },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(201).json(doc);
+  } catch (err) {
+    console.error('POST analysis error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
