@@ -18,8 +18,10 @@ import {
   fetchTopURLs,
   getDateRange,
 } from './services/peecData'
-import { generateContentBrief } from './services/openrouter'
+import { generateContentBrief, generateWeeklyDeltaNarrative, generateCompetitorNarrative } from './services/openrouter'
 import { runDailyAnalysis, clearAnalysisCache, getCachedAnalysis } from './services/dailyAnalysis'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { AIChat } from './components/AIChat'
 import './index.css'
 
@@ -82,6 +84,8 @@ const OverviewDashboard = () => {
   const [trend, setTrend] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [delta, setDelta] = useState(null);
+  const [deltaLoading, setDeltaLoading] = useState(false);
 
   const load = async () => {
     setLoading(true); setError(null);
@@ -89,6 +93,28 @@ const OverviewDashboard = () => {
       const k = await fetchOverviewKPIs(projectId, dateRange);
       const t = await fetchVisibilityTrend(projectId, dateRange);
       setKpis(k); setTrend(t);
+
+      // Fire AI delta narrative after main data loads
+      const cacheKey = `bp_delta_${projectId}_${dateRange.start_date}`;
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        setDelta(JSON.parse(cached));
+      } else {
+        setDeltaLoading(true);
+        try {
+          const range7 = getDateRange(7);
+          const rangePrev = { start_date: getDateRange(14).start_date, end_date: range7.start_date };
+          const [thisWeekKpis, prevWeekKpis, byModel] = await Promise.all([
+            fetchOverviewKPIs(projectId, range7),
+            fetchOverviewKPIs(projectId, rangePrev),
+            fetchVisibilityByModel ? fetchVisibilityByModel(projectId, range7) : Promise.resolve([]),
+          ]);
+          const narrative = await generateWeeklyDeltaNarrative(thisWeekKpis, prevWeekKpis, byModel, ownBrandName);
+          setDelta(narrative);
+          sessionStorage.setItem(cacheKey, JSON.stringify(narrative));
+        } catch (e) { /* delta is best-effort */ }
+        finally { setDeltaLoading(false); }
+      }
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
@@ -99,6 +125,8 @@ const OverviewDashboard = () => {
   if (error) return <ErrorBanner message={error} onRetry={load} />;
 
   const fmt = v => v != null ? `${(v * 100).toFixed(1)}%` : '—';
+  const dirIcon = (d) => d === 'up' ? '▲' : d === 'down' ? '▼' : '→';
+  const dirColor = (d) => d === 'up' ? '#4ade80' : d === 'down' ? '#ef4444' : 'var(--color-text-muted)';
 
   return (
     <div className="flex-col gap-6" style={{ width: '100%' }}>
@@ -112,6 +140,46 @@ const OverviewDashboard = () => {
           Live MCP Connected
         </div>
       </header>
+
+      {/* AI Weekly Delta Narrative */}
+      {(deltaLoading || delta) && (
+        <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '3px solid var(--color-primary)', position: 'relative', overflow: 'hidden' }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: '0.75rem' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-primary)' }}>⚡ Weekly Delta</span>
+            <span className="text-sm text-muted">Last 7 days vs previous 7 days</span>
+          </div>
+          {deltaLoading ? (
+            <span className="shimmer-text text-sm">Analysing week-on-week trends...</span>
+          ) : delta && (
+            <>
+              <p style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '1rem' }}>{delta.headline}</p>
+              {delta.deltas && delta.deltas.length > 0 && (
+                <div className="flex gap-4" style={{ flexWrap: 'wrap', marginBottom: '1rem' }}>
+                  {delta.deltas.map((d, i) => (
+                    <div key={i} style={{ background: 'var(--color-bg-base)', borderRadius: '10px', padding: '0.75rem 1rem', minWidth: '140px' }}>
+                      <p className="text-sm text-muted" style={{ marginBottom: '0.25rem' }}>{d.metric}</p>
+                      <div className="flex items-center gap-2">
+                        <span style={{ fontWeight: 700, color: dirColor(d.direction) }}>{dirIcon(d.direction)} {d.current}</span>
+                        <span className="text-sm text-muted">vs {d.previous}</span>
+                      </div>
+                      {d.change && <span style={{ fontSize: '0.78rem', color: dirColor(d.direction), fontWeight: 600 }}>{d.change}</span>}
+                      {d.insight && <p className="text-muted" style={{ fontSize: '0.78rem', marginTop: '0.25rem' }}>{d.insight}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-4" style={{ flexWrap: 'wrap' }}>
+                {delta.biggestWin && (
+                  <p className="text-sm" style={{ color: '#4ade80' }}>✓ {delta.biggestWin}</p>
+                )}
+                {delta.biggestRisk && (
+                  <p className="text-sm" style={{ color: '#f59e0b' }}>⚠ {delta.biggestRisk}</p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-6" style={{ flexWrap: 'wrap' }}>
         <MetricCard label="Visibility" value={fmt(kpis?.visibility)} sub="Across all tracked AI models" />
@@ -205,14 +273,34 @@ const VisibilityDeepDive = () => {
 };
 
 const CompetitorRadar = () => {
-  const { projectId, dateRange } = useContext(ProjectContext);
+  const { projectId, dateRange, ownBrandName } = useContext(ProjectContext);
   const [brands, setBrands] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [narrative, setNarrative] = useState(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
 
   const load = async () => {
     setLoading(true); setError(null);
-    try { setBrands(await fetchCompetitorTable(projectId, dateRange)); }
+    try {
+      const data = await fetchCompetitorTable(projectId, dateRange);
+      setBrands(data);
+
+      // Fire AI narrative after table loads
+      const cacheKey = `bp_comp_${projectId}_${dateRange.start_date}`;
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        setNarrative(JSON.parse(cached));
+      } else {
+        setNarrativeLoading(true);
+        try {
+          const n = await generateCompetitorNarrative(data, ownBrandName);
+          setNarrative(n);
+          sessionStorage.setItem(cacheKey, JSON.stringify(n));
+        } catch { /* best-effort */ }
+        finally { setNarrativeLoading(false); }
+      }
+    }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
@@ -222,12 +310,53 @@ const CompetitorRadar = () => {
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner message={error} onRetry={load} />;
 
+  const threatColors = { low: '#4ade80', medium: '#f59e0b', high: '#ef4444' };
+
   return (
     <div className="flex-col gap-6" style={{ width: '100%' }}>
       <header>
         <h2 style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>Competitor Radar</h2>
         <p className="text-muted">Share of voice across all tracked brands.</p>
       </header>
+
+      {/* AI Competitive Narrative */}
+      {(narrativeLoading || narrative) && (
+        <div style={{
+          padding: '1.5rem', borderRadius: '14px',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(168,85,247,0.08) 100%)',
+          border: '1px solid rgba(99,102,241,0.3)',
+          position: 'relative',
+        }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: '0.75rem' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#a78bfa' }}>🤖 AI Competitive Intelligence</span>
+          </div>
+          {narrativeLoading ? (
+            <span className="shimmer-text text-sm">Analysing competitive landscape...</span>
+          ) : narrative && (
+            <>
+              <p style={{ fontSize: '1rem', lineHeight: '1.65', marginBottom: '1rem' }}>{narrative.summary}</p>
+              <div className="flex gap-4" style={{ flexWrap: 'wrap' }}>
+                {narrative.leadingBrand && (
+                  <div style={{ background: 'var(--color-bg-base)', borderRadius: '8px', padding: '0.6rem 0.9rem' }}>
+                    <span className="text-sm text-muted">Leader: </span>
+                    <span style={{ fontWeight: 600, color: '#ef4444' }}>{narrative.leadingBrand}</span>
+                    {narrative.whyLeading && <span className="text-sm text-muted"> — {narrative.whyLeading}</span>}
+                  </div>
+                )}
+                {narrative.threatLevel && (
+                  <div style={{ background: 'var(--color-bg-base)', borderRadius: '8px', padding: '0.6rem 0.9rem' }}>
+                    <span className="text-sm text-muted">Threat: </span>
+                    <span style={{ fontWeight: 700, color: threatColors[narrative.threatLevel] || 'var(--color-text-muted)' }}>{narrative.threatLevel.toUpperCase()}</span>
+                  </div>
+                )}
+              </div>
+              {narrative.opportunity && (
+                <p className="text-sm" style={{ marginTop: '0.75rem', color: 'var(--color-primary)' }}>→ {narrative.opportunity}</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
@@ -338,14 +467,33 @@ const CitationGapAudit = () => {
                     <span className="text-sm" style={{ color: 'var(--color-primary)' }}>{d.domain || d.url_classification || 'Action'}</span>
                     <span className="text-sm text-muted" style={{ marginLeft: '1rem' }}>Score: {((d.opportunity_score || 0) * 100).toFixed(0)}</span>
                   </div>
-                  <button onClick={() => genBrief(d, i)} className="btn" style={{ padding: '0.3rem 0.8rem', fontSize: '0.8rem' }}>
-                    {brief[i] ? '↻ Regen' : '✨ Brief'}
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => genBrief(d, i)} className="btn" style={{ padding: '0.3rem 0.8rem', fontSize: '0.8rem' }}>
+                      {brief[i] ? '↻ Regen' : '✨ Brief'}
+                    </button>
+                    {brief[i] && brief[i] !== 'Generating...' && (
+                      <button
+                        onClick={() => {
+                          const ticket = `*Summary:* [${d.action_group_type || d.group_type || 'Citation Gap'}] — Opportunity score: ${((d.opportunity_score || 0) * 100).toFixed(0)}\n\n*Description:*\n${brief[i]}\n\n*Labels:* brandpulse, ai-visibility, ${(d.action_group_type || 'gap').toLowerCase().replace(/\s+/g, '-')}`;
+                          navigator.clipboard.writeText(ticket)
+                            .then(() => alert('Copied as Jira ticket! ✓'))
+                            .catch(() => alert('Copy failed — please copy manually.'));
+                        }}
+                        style={{ padding: '0.3rem 0.8rem', fontSize: '0.8rem', borderRadius: '6px', cursor: 'pointer', background: 'transparent', border: '1px solid var(--border-light)', color: 'var(--color-text-muted)' }}
+                      >
+                        📋 Jira
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {d.text && <p className="text-sm" style={{ marginBottom: '0.5rem' }}>{d.text}</p>}
                 {brief[i] && (
-                  <div style={{ background: 'rgba(99,102,241,0.08)', borderLeft: '3px solid var(--color-primary)', padding: '1rem', borderRadius: '0 8px 8px 0', marginTop: '0.5rem' }}>
-                    <pre className="text-sm" style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-family)' }}>{brief[i]}</pre>
+                  <div className="markdown-body" style={{ background: 'rgba(99,102,241,0.08)', borderLeft: '3px solid var(--color-primary)', padding: '1rem', borderRadius: '0 8px 8px 0', marginTop: '0.5rem' }}>
+                    {brief[i] === 'Generating...' ? (
+                      <span className="shimmer-text text-sm">Generating brief...</span>
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{brief[i]}</ReactMarkdown>
+                    )}
                   </div>
                 )}
               </div>
@@ -611,7 +759,7 @@ function DashboardLayout() {
           display: 'flex', flexDirection: 'column', gap: '1.5rem',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--color-primary)' }}></div>
+            <img src="/logo.png" style={{ width: '32px', height: '32px', objectFit: 'contain' }} alt="BrandPulse Logo" />
             <h1 className="text-gradient" style={{ fontSize: '1.5rem', letterSpacing: '-0.5px' }}>BrandPulse AI</h1>
           </div>
 

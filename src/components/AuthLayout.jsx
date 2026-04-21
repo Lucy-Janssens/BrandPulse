@@ -27,7 +27,7 @@ export default function AuthLayout() {
     <div className="flex items-center justify-center" style={{ minHeight: '100vh', width: '100vw', background: 'var(--color-bg-base)' }}>
       <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', padding: '3rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         <div className="flex-col items-center justify-center gap-2" style={{ textAlign: 'center' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'var(--color-primary)' }}></div>
+          <img src="/logo.png" style={{ width: '48px', height: '48px', objectFit: 'contain', marginBottom: '0.5rem' }} alt="BrandPulse Logo" />
           <h2 className="text-gradient" style={{ fontSize: '1.75rem', marginTop: '0.5rem' }}>BrandPulse AI</h2>
           <p className="text-muted text-sm">{isLogin ? 'Sign in to your command centre' : 'Create your account'}</p>
         </div>

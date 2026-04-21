@@ -1,5 +1,5 @@
 # --- Stage 1: Build frontend ---
-FROM node:18-alpine AS frontend-build
+FROM node:22-alpine AS frontend-build
 
 WORKDIR /app/frontend
 
@@ -15,7 +15,7 @@ COPY public/ ./public/
 RUN pnpm build
 
 # --- Stage 2: Build API ---
-FROM node:18-alpine AS api-build
+FROM node:22-alpine AS api-build
 
 WORKDIR /app/api
 
@@ -25,7 +25,7 @@ RUN npm install -g pnpm && pnpm install --frozen-lockfile 2>/dev/null || npm ins
 COPY api/ ./
 
 # --- Stage 3: Production image ---
-FROM node:18-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 

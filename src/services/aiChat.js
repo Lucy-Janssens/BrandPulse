@@ -25,7 +25,9 @@ export async function chatWithMCP(messageHistory, context, onToolCall) {
     content: `You are BrandPulse AI, the intelligent analyst assistant for tracking brands across AI Search Engines (Perplexity, ChatGPT, Claude, etc). 
     
 You have direct access to the Peec AI Model Context Protocol (MCP) to fetch live data.
-When the user asks a question about their brand's visibility, competitors, or citation gaps, YOU MUST use the provided tools to extract real data to back up your answer.
+When the user asks a question about their brand's visibility, competitors, citation gaps, or what AI models actually say, YOU MUST use the provided tools to extract real data to back up your answer.
+
+Key capability: you can use list_chats to find actual AI conversations, then get_chat to read the verbatim responses. Use this when the user wants to know what ChatGPT/Perplexity/Claude actually says about them.
 
 Current context:
 - Project ID: ${context.projectId} (USE THIS for the project_id argument in tools!)
@@ -92,6 +94,18 @@ Always be concise, analytical, and actionable.`
         if (toolName === 'get_brand_report' || toolName === 'get_domain_report' || toolName === 'get_url_report' || toolName === 'get_actions') {
            const objects = toObjects(result);
            parsedResult = objects.length > 50 ? objects.slice(0, 50) : objects; // Cap size to save tokens
+        } else if (toolName === 'list_chats') {
+          // list_chats may return columnar or array format
+          const objects = toObjects(result);
+          parsedResult = objects.length > 0
+            ? (objects.length > 30 ? objects.slice(0, 30) : objects)
+            : result; // fall back to raw if toObjects returns nothing
+        } else if (toolName === 'get_chat') {
+          // get_chat returns a single chat object — parse the MCP wrapper if needed
+          try {
+            const raw = result?.content?.[0]?.text;
+            parsedResult = raw ? JSON.parse(raw) : result;
+          } catch { parsedResult = result; }
         }
 
         // Add tool result to message history for the next iteration
