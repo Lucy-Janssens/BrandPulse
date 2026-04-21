@@ -29,24 +29,17 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install serve for static frontend
-RUN npm install -g serve
-
 # Copy API
 COPY --from=api-build /app/api ./api
 
 # Copy built frontend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-# Copy entrypoint
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
-
-# Expose ports
-EXPOSE 5000 3000
+# Expose single API/App port
+EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://localhost:5000/api/health || exit 1
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["node", "api/server.js"]

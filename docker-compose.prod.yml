@@ -1,0 +1,25 @@
+services:
+  mongo:
+    image: mongo:latest
+    restart: always
+    volumes:
+      - mongo-data:/data/db
+
+  api:
+    image: ghcr.io/lucy-janssens/brandpulse:latest
+    restart: always
+    ports:
+      - "80:5000"
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongo:27017/brandpulse
+      - JWT_SECRET=change_this_to_a_secure_random_string_in_production
+      # - PEEC_CLIENT_ID=your_client_id
+      # - PEEC_CLIENT_SECRET=your_client_secret
+      # - VITE_OPENROUTER_API_KEY=your_openrouter_key
+      # - VITE_OPENROUTER_MODEL=openai/gpt-4o-mini
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:

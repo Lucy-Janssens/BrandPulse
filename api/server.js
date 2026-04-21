@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const path = require('path');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 require('dotenv').config();
 
 const User = require('./models/User');
@@ -15,6 +17,14 @@ app.use((req, res, next) => {
   next();
 });
 app.use(cors());
+
+// Proxy Peec MCP requests BEFORE express.json() parses body
+app.use('/peec-api', createProxyMiddleware({
+  target: 'https://api.peec.ai',
+  changeOrigin: true,
+  pathRewrite: { '^/peec-api': '' },
+}));
+
 app.use(express.json());
 
 // Health check
@@ -214,6 +224,15 @@ app.post('/api/analysis', authenticateToken, async (req, res) => {
     console.error('POST analysis error:', err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// --- STATIC FRONTEND SERVING ---
+// Host the Vite build output (production)
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+
+// SPA Fallback: any unhandled routes go to index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
 app.listen(PORT, () => {
