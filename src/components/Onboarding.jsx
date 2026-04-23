@@ -14,7 +14,7 @@ export default function Onboarding() {
 
     try {
       const token = localStorage.getItem('brandpulse_token');
-      const res = await fetch('http://127.0.0.1:5050/api/team', {
+      const res = await fetch('/api/team', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

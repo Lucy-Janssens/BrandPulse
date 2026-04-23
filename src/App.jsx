@@ -25,6 +25,26 @@ import remarkGfm from 'remark-gfm'
 import { AIChat } from './components/AIChat'
 import './index.css'
 
+// --- Utilities ---
+const formatName = (name) => {
+  if (!name) return '—';
+  // Strip common technical suffixes
+  let formatted = name.replace(/(-scraper|\.dev|\.ai|\.com)$/gi, '');
+  // Handle UUIDs (crude check: long alphanumeric string)
+  if (/^[a-f0-9]{8,}/i.test(formatted)) {
+    return `Topic: ${formatted.substring(0, 8)}...`;
+  }
+  // Humanize (e.g., chatgpt -> ChatGPT)
+  const map = {
+    'chatgpt': 'ChatGPT',
+    'perplexity': 'Perplexity',
+    'gemini': 'Gemini',
+    'claude': 'Claude',
+    'copilot': 'Copilot'
+  };
+  return map[formatted.toLowerCase()] || formatted.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+};
+
 // --- Project Context ---
 export const ProjectContext = createContext(null);
 
@@ -43,11 +63,13 @@ const ErrorBanner = ({ message, onRetry }) => (
   </div>
 );
 
-const MetricCard = ({ label, value, sub, trend }) => (
-  <div className="glass-panel" style={{ padding: '1.5rem', flex: 1, minWidth: '180px' }}>
+const MetricCard = ({ label, value, sub, trend, tooltip }) => (
+  <div className="glass-panel" style={{ padding: '1.5rem', flex: 1, minWidth: '180px' }} data-tooltip={tooltip}>
     <p className="text-muted text-sm" style={{ marginBottom: '0.5rem' }}>{label}</p>
     <div className="flex items-center gap-4">
-      <span className="text-gradient" style={{ fontSize: '2.2rem', fontWeight: 700 }}>{value ?? '—'}</span>
+      <span className="text-gradient" style={{ fontSize: '2.2rem', fontWeight: 700 }}>
+        {value === '—' || value === null || value === undefined ? '—' : value}
+      </span>
       {trend != null && <span className={`badge ${trend >= 0 ? 'badge-green' : 'badge-red'}`}>{trend >= 0 ? '+' : ''}{trend}%</span>}
     </div>
     {sub && <p className="text-muted text-sm mt-2">{sub}</p>}
@@ -124,7 +146,7 @@ const OverviewDashboard = () => {
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner message={error} onRetry={load} />;
 
-  const fmt = v => v != null ? `${(v * 100).toFixed(1)}%` : '—';
+  const fmt = v => v != null && !isNaN(v) ? `${(v * 100).toFixed(1)}%` : '—';
   const dirIcon = (d) => d === 'up' ? '▲' : d === 'down' ? '▼' : '→';
   const dirColor = (d) => d === 'up' ? '#4ade80' : d === 'down' ? '#ef4444' : 'var(--color-text-muted)';
 
@@ -182,10 +204,10 @@ const OverviewDashboard = () => {
       )}
 
       <div className="flex gap-6" style={{ flexWrap: 'wrap' }}>
-        <MetricCard label="Visibility" value={fmt(kpis?.visibility)} sub="Across all tracked AI models" />
-        <MetricCard label="Share of Voice" value={fmt(kpis?.shareOfVoice)} sub="Among tracked brands" />
-        <MetricCard label="Sentiment" value={kpis?.sentiment != null ? kpis.sentiment.toFixed(2) : '—'} sub="Average mention sentiment" />
-        <MetricCard label="Avg Position" value={kpis?.position != null ? kpis.position.toFixed(1) : '—'} sub="Where your brand appears" />
+        <MetricCard label="Visibility" value={fmt(kpis?.visibility)} sub="Across all tracked AI models" tooltip="Percentage of queries where your brand is mentioned." />
+        <MetricCard label="Share of Voice" value={fmt(kpis?.shareOfVoice)} sub="Among tracked brands" tooltip="Your brand's visibility relative to the entire competitive set." />
+        <MetricCard label="Sentiment" value={kpis?.sentiment != null && !isNaN(kpis.sentiment) ? kpis.sentiment.toFixed(2) : '—'} sub="Average mention sentiment" tooltip="Automated sentiment score from -1 (negative) to 1 (positive)." />
+        <MetricCard label="Avg Position" value={kpis?.position != null && !isNaN(kpis.position) ? kpis.position.toFixed(1) : '—'} sub="Where your brand appears" tooltip="Average numerical rank when your brand is mentioned." />
       </div>
 
       {/* Trend sparkline */}
@@ -220,7 +242,12 @@ const VisibilityDeepDive = () => {
     try {
       const m = await fetchVisibilityByModel(projectId, dateRange);
       const t = await fetchVisibilityByTopic(projectId, dateRange);
-      setByModel(m); setByTopic(t);
+      
+      // Deduplicate by key (model_id or topic_id)
+      const uniqueModels = Array.from(new Map(m.map(item => [item.model_id || item.brand_name, item])).values());
+      const uniqueTopics = Array.from(new Map(t.map(item => [item.topic_id || item.brand_name, item])).values());
+      
+      setByModel(uniqueModels); setByTopic(uniqueTopics);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
@@ -244,7 +271,9 @@ const VisibilityDeepDive = () => {
           <div className="flex-col gap-4">
             {byModel.map((row, i) => (
               <div key={i} className="flex items-center gap-4">
-                <span className="text-sm" style={{ width: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.model_id || row.brand_name}</span>
+                <span className="text-sm" style={{ width: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.model_id || row.brand_name}>
+                  {formatName(row.model_id || row.brand_name)}
+                </span>
                 <Bar value={row.visibility} />
                 <span className="text-sm text-muted" style={{ width: '50px', textAlign: 'right' }}>{((row.visibility || 0) * 100).toFixed(1)}%</span>
               </div>
@@ -259,7 +288,9 @@ const VisibilityDeepDive = () => {
           <div className="flex-col gap-4">
             {byTopic.map((row, i) => (
               <div key={i} className="flex items-center gap-4">
-                <span className="text-sm" style={{ width: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.topic_id || row.brand_name}</span>
+                <span className="text-sm" style={{ width: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.topic_id || row.brand_name}>
+                  {formatName(row.topic_id || row.brand_name)}
+                </span>
                 <Bar value={row.visibility} color="var(--color-secondary)" />
                 <span className="text-sm text-muted" style={{ width: '50px', textAlign: 'right' }}>{((row.visibility || 0) * 100).toFixed(1)}%</span>
               </div>
@@ -279,6 +310,7 @@ const CompetitorRadar = () => {
   const [error, setError] = useState(null);
   const [narrative, setNarrative] = useState(null);
   const [narrativeLoading, setNarrativeLoading] = useState(false);
+  const [sortCfg, setSortCfg] = useState({ key: 'visibility', dir: 'desc' });
 
   const load = async () => {
     setLoading(true); setError(null);
@@ -306,6 +338,16 @@ const CompetitorRadar = () => {
   };
 
   useEffect(() => { load(); }, [projectId, dateRange]);
+
+  const sortedBrands = [...brands].sort((a, b) => {
+    const valA = a[sortCfg.key] ?? 0;
+    const valB = b[sortCfg.key] ?? 0;
+    return sortCfg.dir === 'asc' ? valA - valB : valB - valA;
+  });
+
+  const toggleSort = (key) => {
+    setSortCfg(prev => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
+  };
 
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner message={error} onRetry={load} />;
@@ -364,14 +406,22 @@ const CompetitorRadar = () => {
             <tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
               <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>#</th>
               <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Brand</th>
-              <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Visibility</th>
-              <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>SOV</th>
-              <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Sentiment</th>
-              <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Position</th>
+              <th onClick={() => toggleSort('visibility')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Percentage of total brand mentions.">
+                Visibility {sortCfg.key === 'visibility' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+              </th>
+              <th onClick={() => toggleSort('share_of_voice')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Market share of total citations.">
+                SOV {sortCfg.key === 'share_of_voice' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+              </th>
+              <th onClick={() => toggleSort('sentiment')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Average sentiment analysis (-1 to 1).">
+                Sentiment {sortCfg.key === 'sentiment' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+              </th>
+              <th onClick={() => toggleSort('position')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Lower is better.">
+                Position {sortCfg.key === 'position' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {brands.map((b, i) => (
+            {sortedBrands.map((b, i) => (
               <tr key={b.brand_id || i} style={{ borderBottom: '1px solid var(--border-light)' }}>
                 <td style={{ padding: '1.25rem 1.5rem', fontWeight: 600 }}>{i + 1}</td>
                 <td style={{ padding: '1.25rem 1.5rem' }}>
@@ -442,13 +492,14 @@ const CitationGapAudit = () => {
       <div className="flex gap-4" style={{ flexWrap: 'wrap' }}>
         {gaps.map((g, i) => (
           <div key={i} className="glass-panel" style={{ padding: '1.5rem', flex: '1 1 200px', cursor: 'pointer', borderColor: detailScope === (g.action_group_type || '').toLowerCase() ? 'var(--color-primary)' : undefined }}
-            onClick={() => drillDown((g.action_group_type || '').toLowerCase())}>
+            onClick={() => drillDown((g.action_group_type || '').toLowerCase())}
+            data-tooltip={`Explore ways to improve ${g.action_group_type} citations.`}>
             <p className="text-sm text-muted">{g.action_group_type}</p>
             <p className="text-gradient" style={{ fontSize: '1.5rem', fontWeight: 700 }}>{((g.opportunity_score || 0) * 100).toFixed(0)}</p>
             <p className="text-sm text-muted">Opportunity Score</p>
             <div className="flex justify-between mt-2">
-              <span className="text-sm">Gap: {((g.gap_percentage || 0) * 100).toFixed(0)}%</span>
-              <span className="text-sm">Coverage: {((g.coverage_percentage || 0) * 100).toFixed(0)}%</span>
+              <span className="text-sm" data-tooltip="The difference between you and the top competitor citation rate.">Gap: {((g.gap_percentage || 0) * 100).toFixed(0)}%</span>
+              <span className="text-sm" data-tooltip="Percentage of queries where your brand is currently cited.">Coverage: {((g.coverage_percentage || 0) * 100).toFixed(0)}%</span>
             </div>
           </div>
         ))}
@@ -473,15 +524,16 @@ const CitationGapAudit = () => {
                     </button>
                     {brief[i] && brief[i] !== 'Generating...' && (
                       <button
+                        className="btn btn-jira"
                         onClick={() => {
                           const ticket = `*Summary:* [${d.action_group_type || d.group_type || 'Citation Gap'}] — Opportunity score: ${((d.opportunity_score || 0) * 100).toFixed(0)}\n\n*Description:*\n${brief[i]}\n\n*Labels:* brandpulse, ai-visibility, ${(d.action_group_type || 'gap').toLowerCase().replace(/\s+/g, '-')}`;
                           navigator.clipboard.writeText(ticket)
                             .then(() => alert('Copied as Jira ticket! ✓'))
                             .catch(() => alert('Copy failed — please copy manually.'));
                         }}
-                        style={{ padding: '0.3rem 0.8rem', fontSize: '0.8rem', borderRadius: '6px', cursor: 'pointer', background: 'transparent', border: '1px solid var(--border-light)', color: 'var(--color-text-muted)' }}
+                        style={{ padding: '0.3rem 0.8rem', fontSize: '0.8rem' }}
                       >
-                        📋 Jira
+                        <span>📋</span> Export for Jira
                       </button>
                     )}
                   </div>
@@ -512,6 +564,7 @@ const SourcesExplorer = () => {
   const [tab, setTab] = useState('domains');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [sortCfg, setSortCfg] = useState({ key: 'citation_rate', dir: 'desc' });
 
   const load = async () => {
     setLoading(true); setError(null);
@@ -525,6 +578,19 @@ const SourcesExplorer = () => {
 
   useEffect(() => { load(); }, [projectId, dateRange]);
 
+  const toggleSort = (key) => {
+    setSortCfg(prev => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
+  };
+
+  const sortedData = () => {
+    const raw = tab === 'domains' ? domains : urls;
+    return [...raw].sort((a, b) => {
+      const valA = a[sortCfg.key] ?? 0;
+      const valB = b[sortCfg.key] ?? 0;
+      return sortCfg.dir === 'asc' ? valA - valB : valB - valA;
+    });
+  };
+
   if (loading) return <Spinner />;
   if (error) return <ErrorBanner message={error} onRetry={load} />;
 
@@ -532,6 +598,8 @@ const SourcesExplorer = () => {
     const map = { OWN: '#4ade80', CORPORATE: '#6366f1', EDITORIAL: '#f59e0b', UGC: '#ef4444', REFERENCE: '#8b5cf6', COMPETITOR: '#ef4444' };
     return map[c] || 'var(--color-text-muted)';
   };
+
+  const data = sortedData();
 
   return (
     <div className="flex-col gap-6" style={{ width: '100%' }}>
@@ -542,7 +610,7 @@ const SourcesExplorer = () => {
         </div>
         <div className="flex gap-2">
           {['domains', 'urls'].map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
+            <button key={t} onClick={() => { setTab(t); setSortCfg({ key: 'citation_rate', dir: 'desc' }); }} style={{
               padding: '0.4rem 1rem', borderRadius: '6px', cursor: 'pointer', textTransform: 'capitalize',
               background: tab === t ? 'var(--color-primary)' : 'transparent',
               border: `1px solid ${tab === t ? 'var(--color-primary)' : 'var(--border-light)'}`,
@@ -559,18 +627,26 @@ const SourcesExplorer = () => {
               {tab === 'domains' ? (<>
                 <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Domain</th>
                 <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Type</th>
-                <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Retrieved %</th>
-                <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Citation Rate</th>
+                <th onClick={() => toggleSort('retrieved_percentage')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Frequency of retrieval by models.">
+                  Retrieved % {sortCfg.key === 'retrieved_percentage' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+                </th>
+                <th onClick={() => toggleSort('citation_rate')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Likelihood of being cited when retrieved.">
+                  Citation Rate {sortCfg.key === 'citation_rate' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+                </th>
               </>) : (<>
                 <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>URL</th>
                 <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Type</th>
-                <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Citations</th>
-                <th style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>Citation Rate</th>
+                <th onClick={() => toggleSort('citation_count')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Total citation occurrences.">
+                  Citations {sortCfg.key === 'citation_count' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+                </th>
+                <th onClick={() => toggleSort('citation_rate')} className="sortable-header" style={{ padding: '1.25rem 1.5rem', color: 'var(--color-text-muted)', fontSize: '0.85rem' }} data-tooltip="Citations per retrieval.">
+                  Citation Rate {sortCfg.key === 'citation_rate' && <span className="sort-icon">{sortCfg.dir === 'desc' ? '▼' : '▲'}</span>}
+                </th>
               </>)}
             </tr>
           </thead>
           <tbody>
-            {tab === 'domains' ? domains.map((d, i) => (
+            {tab === 'domains' ? data.map((d, i) => (
               <tr key={i} style={{ borderBottom: '1px solid var(--border-light)' }}>
                 <td style={{ padding: '1.25rem 1.5rem', fontWeight: 500 }}>{d.domain}</td>
                 <td style={{ padding: '1.25rem 1.5rem' }}>
@@ -579,7 +655,7 @@ const SourcesExplorer = () => {
                 <td style={{ padding: '1.25rem 1.5rem' }}>{((d.retrieved_percentage || 0) * 100).toFixed(1)}%</td>
                 <td style={{ padding: '1.25rem 1.5rem' }}>{(d.citation_rate || 0).toFixed(2)}</td>
               </tr>
-            )) : urls.map((u, i) => (
+            )) : data.map((u, i) => (
               <tr key={i} style={{ borderBottom: '1px solid var(--border-light)' }}>
                 <td style={{ padding: '1.25rem 1.5rem', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   <a href={u.url} target="_blank" rel="noopener" style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>{u.title || u.url}</a>
@@ -593,7 +669,7 @@ const SourcesExplorer = () => {
             ))}
           </tbody>
         </table>
-        {((tab === 'domains' && domains.length === 0) || (tab === 'urls' && urls.length === 0)) && (
+        {data.length === 0 && (
           <p className="text-muted text-sm" style={{ padding: '2rem', textAlign: 'center' }}>No source data yet.</p>
         )}
       </div>
@@ -758,9 +834,15 @@ function DashboardLayout() {
           borderRadius: '0 16px 16px 0', padding: '2rem 1.5rem',
           display: 'flex', flexDirection: 'column', gap: '1.5rem',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <img src="/logo.png" style={{ width: '32px', height: '32px', objectFit: 'contain' }} alt="BrandPulse Logo" />
-            <h1 className="text-gradient" style={{ fontSize: '1.5rem', letterSpacing: '-0.5px' }}>BrandPulse AI</h1>
+          <div className="flex justify-between items-center">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <img src="/logo.png" style={{ width: '32px', height: '32px', objectFit: 'contain' }} alt="BrandPulse Logo" />
+              <h1 className="text-gradient" style={{ fontSize: '1.5rem', letterSpacing: '-0.5px' }}>BrandPulse AI</h1>
+            </div>
+            <div className="alert-bell" data-tooltip="No critical shifts detected.">
+              🔔
+              <span className="alert-dot"></span>
+            </div>
           </div>
 
           <div className="flex-col gap-1">
@@ -783,6 +865,14 @@ function DashboardLayout() {
                 }}>{name}</button>
             ))}
           </nav>
+
+          <div className="model-indicator flex gap-2 items-center" data-tooltip="Claude 3.5 Sonnet orchestrating strategic reasoning.">
+            <span style={{ fontSize: '1rem' }}>⚡</span>
+            <div className="flex-col">
+              <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-primary)' }}>Orchestrator</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-main)' }}>Claude 3.5 Sonnet</span>
+            </div>
+          </div>
 
           <div className="flex items-center justify-between" style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
             <span className="text-sm text-muted">{user?.email?.split('@')[0]}</span>
